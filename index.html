@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bag Studio</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+
+    <div class="app-shell">
+      <header class="hero-card">
+        <div>
+          <p class="eyebrow">Foxglove-lite · 离线分析原型</p>
+          <h1>Bag Studio</h1>
+          <p class="subtitle">
+            rosbag 字段作图、图像联动查看、`odom` 全局轨迹。
+          </p>
+        </div>
+        <div class="hero-actions">
+          <div class="dataset-toolbar">
+            <label class="compact-field dataset-picker">
+              <span>数据集</span>
+              <select id="dataset-select"><option value="rosbag2_2026_04_15-05_06_04">rosbag2_2026_04_15-05_06_04 · 2026-04-16T00:06:58+08:00</option></select>
+            </label>
+            <button id="reload-btn" class="ghost-btn">重新加载</button>
+          </div>
+          <section class="theme-dock">
+            <button id="theme-toggle-btn" class="ghost-btn small-btn theme-toggle-btn" type="button" aria-expanded="false">
+              <span>界面主题</span>
+              <span id="theme-toggle-indicator">展开</span>
+            </button>
+            <div id="theme-dock-body" class="theme-dock-body hidden">
+              <div class="field-grid">
+                <label class="compact-field">
+                  <span>强调色</span>
+                  <input id="accent-color-input" class="color-input" type="color" value="#5ba2ff">
+                </label>
+                <label class="compact-field">
+                  <span>底部色调</span>
+                  <input id="bottom-tint-input" class="color-input" type="color" value="#6bd6ff">
+                </label>
+                <label class="compact-field full-width">
+                  <span>底部亮度</span>
+                  <input id="bottom-glow-input" type="range" min="0" max="100" value="58">
+                </label>
+                <label class="compact-field full-width">
+                  <span>面板亮度</span>
+                  <input id="panel-lift-input" type="range" min="0" max="100" value="46">
+                </label>
+              </div>
+              <button id="reset-theme-btn" class="ghost-btn small-btn">恢复默认主题</button>
+            </div>
+          </section>
+        </div>
+      </header>
+
+      <section id="bag-loader" class="panel bag-loader">
+        <div class="bag-loader-header">
+          <div class="bag-loader-copy">
+            <p class="eyebrow">Import Bag</p>
+            <h2>导入 rosbag2</h2>
+            <p>选目录后直接解析，完成后自动加入上方数据集。</p>
+          </div>
+          <div class="loader-form">
+            <label class="compact-field loader-path-field">
+              <span>Bag 路径</span>
+              <input id="bag-path-input" type="text" placeholder="/path/to/your/rosbag2_directory">
+            </label>
+            <div class="loader-actions">
+              <button id="pick-dir-btn" class="ghost-btn">选择目录</button>
+              <button id="parse-btn" class="primary-btn">开始解析</button>
+            </div>
+          </div>
+        </div>
+        <div class="loader-status-row">
+          <div id="parse-progress" class="parse-progress hidden">
+            <div class="progress-bar-wrap">
+              <div id="progress-bar" class="progress-bar" style="width:0%"></div>
+            </div>
+            <div id="progress-text" class="progress-text">正在连接...</div>
+          </div>
+          <div id="parse-error" class="parse-error hidden"></div>
+        </div>
+        <div class="global-layout-toolbar">
+          <label class="compact-field layout-preset-field">
+            <span>全局配置模板</span>
+            <select id="layout-preset-select"><option value="builtin:default" selected="">默认配置</option><option value="layout_1776285652872_fdc4ec">uwb调试</option></select>
+          </label>
+          <button id="save-default-layout" class="ghost-btn small-btn">保存为配置</button>
+          <button id="delete-layout-preset" class="ghost-btn small-btn">删除配置</button>
+        </div>
+        <div id="bag-topic-summary" class="bag-topic-summary">
+          <div class="bag-topic-summary-head">
+            <strong>当前数据集 Topic</strong>
+            <span id="bag-topic-count" class="muted-text">4 个 topic · 图像 2 · 数值 2 · Odom 1</span>
+          </div>
+          <div id="bag-topic-list" class="bag-topic-list"><span class="meta-pill" title="sensor_msgs/msg/CompressedImage">/front_camera/image_compressed · 图像 · 317 帧</span><span class="meta-pill" title="nav_msgs/msg/Odometry">/odom/current_pose · Odom · 1348 点</span><span class="meta-pill" title="sensor_msgs/msg/CompressedImage">/rear_camera/image_compressed · 图像 · 312 帧</span><span class="meta-pill" title="robots_dog_msgs/msg/Uwb">/uwb · 数据 · 555 条</span></div>
+        </div>
+      </section>
+
+      <section id="empty-state" class="panel empty-state hidden">
+        <h2>还没有可用数据集</h2>
+        <p>在上方输入 bag 目录路径，点击"开始解析"加载数据。</p>
+      </section>
+
+      <main id="app-main" class="">
+        <section id="workspace-grid" class="workspace-grid">
+          <aside id="sidebar-panel" class="panel sidebar">
+            <section class="sidebar-section">
+              <div class="section-header">
+                <div>
+                  <h2>曲线配置</h2>
+                </div>
+              </div>
+              <div id="series-list" class="series-list"><article class="series-card" data-series-id="series_1776305070434_898614">
+      <div class="series-card-header">
+        <div class="series-card-title">
+          <strong>系列 1</strong>
+          <div class="series-chip">
+            <span class="series-dot" style="background:#fb7185"></span>
+            <span>数值字段</span>
+          </div>
+        </div>
+        <div class="series-card-actions">
+          <button type="button" class="ghost-btn small-btn" data-action="edit">编辑</button>
+          <button type="button" class="remove-btn" data-action="remove">删除</button>
+        </div>
+      </div>
+      <div class="series-card-summary">/uwb · azimuth</div>
+      <div class="series-card-meta">
+        <span class="meta-pill">颜色 <span class="series-dot" style="background:#fb7185"></span></span>
+        
+        
+      </div>
+    </article><article class="series-card" data-series-id="series_1776305070434_b677e7">
+      <div class="series-card-header">
+        <div class="series-card-title">
+          <strong>系列 2</strong>
+          <div class="series-chip">
+            <span class="series-dot" style="background:#a78bfa"></span>
+            <span>数值字段</span>
+          </div>
+        </div>
+        <div class="series-card-actions">
+          <button type="button" class="ghost-btn small-btn" data-action="edit">编辑</button>
+          <button type="button" class="remove-btn" data-action="remove">删除</button>
+        </div>
+      </div>
+      <div class="series-card-summary">/odom/current_pose · twist.twist.angular.z</div>
+      <div class="series-card-meta">
+        <span class="meta-pill">颜色 <span class="series-dot" style="background:#a78bfa"></span></span>
+        <span class="meta-pill">倍率 ×60.000</span>
+        
+      </div>
+    </article></div>
+              <div class="button-stack">
+                <button id="add-numeric-series" class="primary-btn">添加数值字段</button>
+                <button id="add-string-series" disabled="">添加字符串提取</button>
+              </div>
+            </section>
+          </aside>
+
+          <section id="top-visual-grid" class="top-visual-grid">
+              <section class="top-visual-main">
+                <article id="image-panel" class="panel">
+                  <div class="section-header">
+                    <div>
+                      <h2>图像浏览器</h2>
+                      <p>按时间轴联动同步查看多路图像。</p>
+                    </div>
+                    <div class="section-actions image-toolbar">
+                      <div class="image-nav-group">
+                        <button id="prev-frame-btn" class="ghost-btn small-btn" title="上一帧">◀ 帧</button>
+                        <button id="next-frame-btn" class="ghost-btn small-btn" title="下一帧">帧 ▶</button>
+                      </div>
+                      <button id="add-image-panel" class="ghost-btn small-btn" title="新增相机">＋ 相机</button>
+                    </div>
+                  </div>
+                  <div id="image-grid" class="image-grid" style="--cam-columns: 1;">
+    <div class="cam-tile" data-panel-idx="0">
+      <div class="cam-tile-head">
+        <select class="cam-topic-select" data-panel-idx="0"><option value="/front_camera/image_compressed" selected="">/front_camera/image_compressed · 317 帧</option><option value="/rear_camera/image_compressed">/rear_camera/image_compressed · 312 帧</option></select>
+        
+      </div>
+      <div class="cam-tile-stage">
+        <img class="cam-frame-img" data-panel-idx="0" data-frame-idx="25" alt="/front_camera/image_compressed frame 26" style="cursor: zoom-in;" data-request-token="26" data-pending-src="" src="" data-displayed-src="http://127.0.0.1:18081/datasets/rosbag2_2026_04_15-05_06_04/previews/front_camera_image_compressed/00025.jpg">
+        <span class="cam-tile-empty muted-text hidden">此 topic 无帧数据</span>
+        <div class="meta-list image-meta-overlay">
+          <span class="meta-pill cam-meta-index"><strong>帧 26</strong> / 317</span>
+          <span class="meta-pill cam-meta-relative">T+4.757886s</span>
+          <span class="meta-pill cam-meta-absolute">04/15 17:07:50</span>
+          <span class="meta-pill cam-meta-size">1920×1080</span>
+        </div>
+      </div>
+    </div></div>
+                  <div id="image-empty" class="image-empty hidden">当前数据集没有可用图像流</div>
+                </article>
+
+    <div id="image-fullscreen" class="image-fullscreen hidden" role="dialog" aria-modal="true">
+      <button id="fullscreen-close" class="fullscreen-close" type="button" aria-label="关闭">✕</button>
+      <button id="fullscreen-prev" class="fullscreen-nav fullscreen-nav-prev" type="button" aria-label="上一帧">◀</button>
+      <div class="fullscreen-stage">
+        <img id="fullscreen-img" src="http://127.0.0.1:18081/" alt="全屏预览">
+      </div>
+      <button id="fullscreen-next" class="fullscreen-nav fullscreen-nav-next" type="button" aria-label="下一帧">▶</button>
+      <div id="fullscreen-meta" class="fullscreen-meta"></div>
+    </div>
+
+                <article id="timeline-panel" class="panel">
+                  <div class="section-header">
+                    <div>
+                      <h2>时间轴联动</h2>
+                      <p>拖动时间轴联动图像和曲线。</p>
+                    </div>
+                    <div id="cursor-meta" class="inline-meta">
+      <span class="inline-pill">时间 4.642 s</span>
+      <span class="inline-pill">04/15 17:07:50</span>
+      <span class="inline-pill">范围 0.00–36.27 s</span>
+    </div>
+                  </div>
+                  <canvas id="timeline-canvas" class="chart-canvas timeline-canvas" height="159" width="507"></canvas>
+                  <div class="timeline-controls">
+                    <button id="cursor-to-start" class="ghost-btn small-btn">回到开始</button>
+                    <input id="cursor-slider" class="timeline-slider" type="range" min="0" max="1000" value="0">
+                    <button id="cursor-to-end" class="ghost-btn small-btn">跳到结尾</button>
+                  </div>
+                  <div id="cursor-samples" class="sample-grid">
+      <article class="cursor-sample">
+        <span class="series-dot" style="background:#fb7185"></span>
+        <strong style="color:#fb7185">/uwb · azimuth</strong>
+        <span class="mono">96.8620</span>
+      </article>
+    
+      <article class="cursor-sample">
+        <span class="series-dot" style="background:#a78bfa"></span>
+        <strong style="color:#a78bfa">/odom/current_pose · twist.twist.angular.z</strong>
+        <span class="mono">6.3102</span>
+      </article>
+    </div>
+                  <div class="recording-toolbar">
+                    <div class="recording-actions">
+                      <button id="record-playback-btn" class="primary-btn small-btn" type="button">录制回放</button>
+                      <button id="download-mp4-btn" class="ghost-btn small-btn" type="button" disabled>下载 MP4</button>
+                    </div>
+                    <div id="recording-status" class="recording-status muted-text">加载数据后可按当前布局自动录制为 WebM。</div>
+                  </div>
+                </article>
+              </section>
+
+              <section id="xy-panel-section" class="top-visual-side">
+                <article class="panel">
+                  <div class="section-header">
+                    <div>
+                      <h2>XY 子图工作区</h2>
+                      <p>右侧只保留一个 XY 视图，可叠加多组 X / Y 坐标。</p>
+                    </div>
+                    <div class="section-actions subplot-header-tools">
+                      <button id="add-subplot" class="ghost-btn small-btn">添加坐标组</button>
+                      <button id="cleanup-subplots" class="ghost-btn small-btn">清空坐标组</button>
+                    </div>
+                  </div>
+                  <div id="plot-panels" class="plot-panels side-plot-panels"><section class="subplot-card">
+      <div class="subplot-header compact-subplot-header">
+        <div>
+          <strong>坐标组 1</strong>
+          <p>可从全局数值字段中直接指定 X / Y 坐标。</p>
+        </div>
+        <button type="button" class="ghost-btn small-btn" data-action="delete-subplot">删除坐标组</button>
+      </div>
+      <div class="subplot-xy-toolbar">
+        <label class="compact-field">
+          <span>X 坐标字段</span>
+          <select data-action="subplot-x"><option value="/odom/current_pose::header.stamp.nanosec">/odom/current_pose · header.stamp.nanosec</option><option value="/odom/current_pose::header.stamp.sec">/odom/current_pose · header.stamp.sec</option><option value="/odom/current_pose::pose.pose.orientation.w">/odom/current_pose · pose.pose.orientation.w</option><option value="/odom/current_pose::pose.pose.orientation.x">/odom/current_pose · pose.pose.orientation.x</option><option value="/odom/current_pose::pose.pose.orientation.y">/odom/current_pose · pose.pose.orientation.y</option><option value="/odom/current_pose::pose.pose.orientation.z">/odom/current_pose · pose.pose.orientation.z</option><option value="/odom/current_pose::pose.pose.position.x" selected="">/odom/current_pose · pose.pose.position.x</option><option value="/odom/current_pose::pose.pose.position.y">/odom/current_pose · pose.pose.position.y</option><option value="/odom/current_pose::pose.pose.position.z">/odom/current_pose · pose.pose.position.z</option><option value="/odom/current_pose::twist.twist.angular.x">/odom/current_pose · twist.twist.angular.x</option><option value="/odom/current_pose::twist.twist.angular.y">/odom/current_pose · twist.twist.angular.y</option><option value="/odom/current_pose::twist.twist.angular.z">/odom/current_pose · twist.twist.angular.z</option><option value="/odom/current_pose::twist.twist.linear.x">/odom/current_pose · twist.twist.linear.x</option><option value="/odom/current_pose::twist.twist.linear.y">/odom/current_pose · twist.twist.linear.y</option><option value="/odom/current_pose::twist.twist.linear.z">/odom/current_pose · twist.twist.linear.z</option><option value="/uwb::azimuth">/uwb · azimuth</option><option value="/uwb::distance">/uwb · distance</option><option value="/uwb::elevation">/uwb · elevation</option><option value="/uwb::header.stamp.nanosec">/uwb · header.stamp.nanosec</option><option value="/uwb::header.stamp.sec">/uwb · header.stamp.sec</option><option value="/uwb::pos_confidence">/uwb · pos_confidence</option></select>
+        </label>
+        <label class="compact-field">
+          <span>Y 坐标字段</span>
+          <select data-action="subplot-y"><option value="/odom/current_pose::header.stamp.nanosec">/odom/current_pose · header.stamp.nanosec</option><option value="/odom/current_pose::header.stamp.sec">/odom/current_pose · header.stamp.sec</option><option value="/odom/current_pose::pose.pose.orientation.w">/odom/current_pose · pose.pose.orientation.w</option><option value="/odom/current_pose::pose.pose.orientation.x">/odom/current_pose · pose.pose.orientation.x</option><option value="/odom/current_pose::pose.pose.orientation.y">/odom/current_pose · pose.pose.orientation.y</option><option value="/odom/current_pose::pose.pose.orientation.z">/odom/current_pose · pose.pose.orientation.z</option><option value="/odom/current_pose::pose.pose.position.x">/odom/current_pose · pose.pose.position.x</option><option value="/odom/current_pose::pose.pose.position.y" selected="">/odom/current_pose · pose.pose.position.y</option><option value="/odom/current_pose::pose.pose.position.z">/odom/current_pose · pose.pose.position.z</option><option value="/odom/current_pose::twist.twist.angular.x">/odom/current_pose · twist.twist.angular.x</option><option value="/odom/current_pose::twist.twist.angular.y">/odom/current_pose · twist.twist.angular.y</option><option value="/odom/current_pose::twist.twist.angular.z">/odom/current_pose · twist.twist.angular.z</option><option value="/odom/current_pose::twist.twist.linear.x">/odom/current_pose · twist.twist.linear.x</option><option value="/odom/current_pose::twist.twist.linear.y">/odom/current_pose · twist.twist.linear.y</option><option value="/odom/current_pose::twist.twist.linear.z">/odom/current_pose · twist.twist.linear.z</option><option value="/uwb::azimuth">/uwb · azimuth</option><option value="/uwb::distance">/uwb · distance</option><option value="/uwb::elevation">/uwb · elevation</option><option value="/uwb::header.stamp.nanosec">/uwb · header.stamp.nanosec</option><option value="/uwb::header.stamp.sec">/uwb · header.stamp.sec</option><option value="/uwb::pos_confidence">/uwb · pos_confidence</option></select>
+        </label>
+        <label class="compact-field full-width subplot-transform-toggle">
+          <span>坐标变换</span>
+          <select data-action="subplot-transform">
+            <option value="local" selected="">保持局部 XY</option>
+            <option value="odom_global">通过 Odom 转全局</option>
+          </select>
+        </label>
+      </div>
+      <canvas class="chart-canvas subplot-canvas" height="243" width="267"></canvas>
+      <div class="stats-inline"><div class="inline-pill">
+      <span class="series-dot" style="background:#5ba2ff"></span>
+      <strong>/odom/current_pose · pose.pose.position.x</strong>
+      <span class="muted-text">n=1348</span>
+      <span class="muted-text">min=500.161</span>
+      <span class="muted-text">max=506.764</span>
+    </div><div class="inline-pill">
+      <span class="series-dot" style="background:#fb7185"></span>
+      <strong>/odom/current_pose · pose.pose.position.y</strong>
+      <span class="muted-text">n=1348</span>
+      <span class="muted-text">min=168.637</span>
+      <span class="muted-text">max=173.447</span>
+    </div></div>
+    </section><section class="subplot-card">
+      <div class="subplot-header compact-subplot-header">
+        <div>
+          <strong>坐标组 2</strong>
+          <p>可从全局数值字段中直接指定 X / Y 坐标。</p>
+        </div>
+        <button type="button" class="ghost-btn small-btn" data-action="delete-subplot">删除坐标组</button>
+      </div>
+      <div class="subplot-xy-toolbar">
+        <label class="compact-field">
+          <span>X 坐标字段</span>
+          <select data-action="subplot-x"><option value="/odom/current_pose::header.stamp.nanosec">/odom/current_pose · header.stamp.nanosec</option><option value="/odom/current_pose::header.stamp.sec">/odom/current_pose · header.stamp.sec</option><option value="/odom/current_pose::pose.pose.orientation.w">/odom/current_pose · pose.pose.orientation.w</option><option value="/odom/current_pose::pose.pose.orientation.x">/odom/current_pose · pose.pose.orientation.x</option><option value="/odom/current_pose::pose.pose.orientation.y">/odom/current_pose · pose.pose.orientation.y</option><option value="/odom/current_pose::pose.pose.orientation.z">/odom/current_pose · pose.pose.orientation.z</option><option value="/odom/current_pose::pose.pose.position.x">/odom/current_pose · pose.pose.position.x</option><option value="/odom/current_pose::pose.pose.position.y">/odom/current_pose · pose.pose.position.y</option><option value="/odom/current_pose::pose.pose.position.z">/odom/current_pose · pose.pose.position.z</option><option value="/odom/current_pose::twist.twist.angular.x">/odom/current_pose · twist.twist.angular.x</option><option value="/odom/current_pose::twist.twist.angular.y">/odom/current_pose · twist.twist.angular.y</option><option value="/odom/current_pose::twist.twist.angular.z">/odom/current_pose · twist.twist.angular.z</option><option value="/odom/current_pose::twist.twist.linear.x">/odom/current_pose · twist.twist.linear.x</option><option value="/odom/current_pose::twist.twist.linear.y">/odom/current_pose · twist.twist.linear.y</option><option value="/odom/current_pose::twist.twist.linear.z">/odom/current_pose · twist.twist.linear.z</option><option value="/uwb::azimuth">/uwb · azimuth</option><option value="/uwb::distance" selected="">/uwb · distance</option><option value="/uwb::elevation">/uwb · elevation</option><option value="/uwb::header.stamp.nanosec">/uwb · header.stamp.nanosec</option><option value="/uwb::header.stamp.sec">/uwb · header.stamp.sec</option><option value="/uwb::pos_confidence">/uwb · pos_confidence</option></select>
+        </label>
+        <label class="compact-field">
+          <span>Y 坐标字段</span>
+          <select data-action="subplot-y"><option value="/odom/current_pose::header.stamp.nanosec">/odom/current_pose · header.stamp.nanosec</option><option value="/odom/current_pose::header.stamp.sec">/odom/current_pose · header.stamp.sec</option><option value="/odom/current_pose::pose.pose.orientation.w">/odom/current_pose · pose.pose.orientation.w</option><option value="/odom/current_pose::pose.pose.orientation.x">/odom/current_pose · pose.pose.orientation.x</option><option value="/odom/current_pose::pose.pose.orientation.y">/odom/current_pose · pose.pose.orientation.y</option><option value="/odom/current_pose::pose.pose.orientation.z">/odom/current_pose · pose.pose.orientation.z</option><option value="/odom/current_pose::pose.pose.position.x">/odom/current_pose · pose.pose.position.x</option><option value="/odom/current_pose::pose.pose.position.y">/odom/current_pose · pose.pose.position.y</option><option value="/odom/current_pose::pose.pose.position.z">/odom/current_pose · pose.pose.position.z</option><option value="/odom/current_pose::twist.twist.angular.x">/odom/current_pose · twist.twist.angular.x</option><option value="/odom/current_pose::twist.twist.angular.y">/odom/current_pose · twist.twist.angular.y</option><option value="/odom/current_pose::twist.twist.angular.z">/odom/current_pose · twist.twist.angular.z</option><option value="/odom/current_pose::twist.twist.linear.x">/odom/current_pose · twist.twist.linear.x</option><option value="/odom/current_pose::twist.twist.linear.y">/odom/current_pose · twist.twist.linear.y</option><option value="/odom/current_pose::twist.twist.linear.z">/odom/current_pose · twist.twist.linear.z</option><option value="/uwb::azimuth" selected="">/uwb · azimuth</option><option value="/uwb::distance">/uwb · distance</option><option value="/uwb::elevation">/uwb · elevation</option><option value="/uwb::header.stamp.nanosec">/uwb · header.stamp.nanosec</option><option value="/uwb::header.stamp.sec">/uwb · header.stamp.sec</option><option value="/uwb::pos_confidence">/uwb · pos_confidence</option></select>
+        </label>
+        <label class="compact-field full-width subplot-transform-toggle">
+          <span>坐标变换</span>
+          <select data-action="subplot-transform">
+            <option value="local" selected="">保持局部 XY</option>
+            <option value="odom_global">通过 Odom 转全局</option>
+          </select>
+        </label>
+      </div>
+      <canvas class="chart-canvas subplot-canvas" height="243" width="267"></canvas>
+      <div class="stats-inline"><div class="inline-pill">
+      <span class="series-dot" style="background:#5ba2ff"></span>
+      <strong>/uwb · distance</strong>
+      <span class="muted-text">n=555</span>
+      <span class="muted-text">min=1.142</span>
+      <span class="muted-text">max=9.404</span>
+    </div><div class="inline-pill">
+      <span class="series-dot" style="background:#fb7185"></span>
+      <strong>/uwb · azimuth</strong>
+      <span class="muted-text">n=555</span>
+      <span class="muted-text">min=-121.537</span>
+      <span class="muted-text">max=136.111</span>
+    </div></div>
+    </section></div>
+                </article>
+              </section>
+          </section>
+
+          <section id="odom-config-panel" class="panel odom-config-panel">
+            <div class="section-header">
+              <div>
+                <h2>坐标转换模块</h2>
+                <p>Odom → Global：平移、航向角，以及局部 XY → 全局的表达式。</p>
+              </div>
+              <button id="odom-toggle-btn" class="ghost-btn small-btn fold-toggle-btn" type="button" aria-expanded="false">
+                <span>Odom → Global</span>
+                <span id="odom-toggle-indicator">展开</span>
+              </button>
+            </div>
+            <div id="odom-panel-body" class="fold-panel hidden">
+              <div class="field-grid">
+                <label class="compact-field full-width">
+                  <span>Odom Topic</span>
+                  <select id="odom-topic-select"><option value="/odom/current_pose" selected="">/odom/current_pose</option></select>
+                </label>
+                <label class="compact-field full-width">
+                  <span>变换模式</span>
+                  <select id="transform-mode-select">
+                    <option value="identity">Identity</option>
+                    <option value="start_origin">首帧归零</option>
+                    <option value="custom">自定义平移 + yaw</option>
+                  </select>
+                </label>
+                <label class="compact-field">
+                  <span>tx (m)</span>
+                  <input id="tx-input" type="number" step="0.01" value="0">
+                </label>
+                <label class="compact-field">
+                  <span>ty (m)</span>
+                  <input id="ty-input" type="number" step="0.01" value="0">
+                </label>
+                <label class="compact-field full-width">
+                  <span>yaw (deg)</span>
+                  <input id="yaw-input" type="number" step="0.1" value="0">
+                </label>
+              </div>
+              <div class="odom-local-module">
+                <div class="odom-local-head">
+                  <strong>局部 XY → 全局</strong>
+                  <label class="inline-check">
+                    <input id="odom-local-enable" type="checkbox">
+                    <span>显示转换结果</span>
+                  </label>
+                </div>
+                <p id="odom-local-copy" class="fold-panel-copy">直接选择距离字段和方位角字段，系统会用当前公式换算出局部 XY，再按 Odom 位姿转换到全局坐标。</p>
+                <div class="field-grid">
+                  <label class="compact-field full-width">
+                    <span>坐标读取方式</span>
+                    <select id="odom-local-coordinate-mode">
+                      <option value="xy">XY 直角坐标</option>
+                      <option value="polar">距离 + 方位角</option>
+                    </select>
+                  </label>
+                  <label class="compact-field full-width">
+                    <span id="odom-local-x-label">距离字段</span>
+                    <select id="odom-local-x-select"><option value="/odom/current_pose::header.stamp.nanosec">/odom/current_pose · header.stamp.nanosec</option><option value="/odom/current_pose::header.stamp.sec">/odom/current_pose · header.stamp.sec</option><option value="/odom/current_pose::pose.pose.orientation.w">/odom/current_pose · pose.pose.orientation.w</option><option value="/odom/current_pose::pose.pose.orientation.x">/odom/current_pose · pose.pose.orientation.x</option><option value="/odom/current_pose::pose.pose.orientation.y">/odom/current_pose · pose.pose.orientation.y</option><option value="/odom/current_pose::pose.pose.orientation.z">/odom/current_pose · pose.pose.orientation.z</option><option value="/odom/current_pose::pose.pose.position.x">/odom/current_pose · pose.pose.position.x</option><option value="/odom/current_pose::pose.pose.position.y">/odom/current_pose · pose.pose.position.y</option><option value="/odom/current_pose::pose.pose.position.z">/odom/current_pose · pose.pose.position.z</option><option value="/odom/current_pose::twist.twist.angular.x">/odom/current_pose · twist.twist.angular.x</option><option value="/odom/current_pose::twist.twist.angular.y">/odom/current_pose · twist.twist.angular.y</option><option value="/odom/current_pose::twist.twist.angular.z">/odom/current_pose · twist.twist.angular.z</option><option value="/odom/current_pose::twist.twist.linear.x">/odom/current_pose · twist.twist.linear.x</option><option value="/odom/current_pose::twist.twist.linear.y">/odom/current_pose · twist.twist.linear.y</option><option value="/odom/current_pose::twist.twist.linear.z">/odom/current_pose · twist.twist.linear.z</option><option value="/uwb::azimuth">/uwb · azimuth</option><option value="/uwb::distance">/uwb · distance</option><option value="/uwb::elevation">/uwb · elevation</option><option value="/uwb::header.stamp.nanosec">/uwb · header.stamp.nanosec</option><option value="/uwb::header.stamp.sec">/uwb · header.stamp.sec</option><option value="/uwb::pos_confidence">/uwb · pos_confidence</option></select>
+                  </label>
+                  <label class="compact-field full-width">
+                    <span id="odom-local-y-label">方位角字段</span>
+                    <select id="odom-local-y-select"><option value="/odom/current_pose::header.stamp.nanosec">/odom/current_pose · header.stamp.nanosec</option><option value="/odom/current_pose::header.stamp.sec">/odom/current_pose · header.stamp.sec</option><option value="/odom/current_pose::pose.pose.orientation.w">/odom/current_pose · pose.pose.orientation.w</option><option value="/odom/current_pose::pose.pose.orientation.x">/odom/current_pose · pose.pose.orientation.x</option><option value="/odom/current_pose::pose.pose.orientation.y">/odom/current_pose · pose.pose.orientation.y</option><option value="/odom/current_pose::pose.pose.orientation.z">/odom/current_pose · pose.pose.orientation.z</option><option value="/odom/current_pose::pose.pose.position.x">/odom/current_pose · pose.pose.position.x</option><option value="/odom/current_pose::pose.pose.position.y">/odom/current_pose · pose.pose.position.y</option><option value="/odom/current_pose::pose.pose.position.z">/odom/current_pose · pose.pose.position.z</option><option value="/odom/current_pose::twist.twist.angular.x">/odom/current_pose · twist.twist.angular.x</option><option value="/odom/current_pose::twist.twist.angular.y">/odom/current_pose · twist.twist.angular.y</option><option value="/odom/current_pose::twist.twist.angular.z">/odom/current_pose · twist.twist.angular.z</option><option value="/odom/current_pose::twist.twist.linear.x">/odom/current_pose · twist.twist.linear.x</option><option value="/odom/current_pose::twist.twist.linear.y">/odom/current_pose · twist.twist.linear.y</option><option value="/odom/current_pose::twist.twist.linear.z">/odom/current_pose · twist.twist.linear.z</option><option value="/uwb::azimuth">/uwb · azimuth</option><option value="/uwb::distance">/uwb · distance</option><option value="/uwb::elevation">/uwb · elevation</option><option value="/uwb::header.stamp.nanosec">/uwb · header.stamp.nanosec</option><option value="/uwb::header.stamp.sec">/uwb · header.stamp.sec</option><option value="/uwb::pos_confidence">/uwb · pos_confidence</option></select>
+                  </label>
+                  <label class="compact-field full-width">
+                    <span id="odom-local-x-expr-label">局部 X 公式</span>
+                    <input id="odom-local-x-expr" type="text" value="x" placeholder="例如 r * cos(theta * PI / 180)">
+                  </label>
+                  <label class="compact-field full-width">
+                    <span id="odom-local-y-expr-label">局部 Y 公式</span>
+                    <input id="odom-local-y-expr" type="text" value="y" placeholder="例如 r * sin(theta * PI / 180)">
+                  </label>
+                </div>
+                <div class="odom-local-quick-actions">
+                  <button id="odom-local-preset-cartesian" class="ghost-btn small-btn" type="button">直角坐标</button>
+                  <button id="odom-local-preset-polar" class="ghost-btn small-btn" type="button">距离+方位角</button>
+                </div>
+                <div id="odom-local-status" class="odom-local-status muted-text">局部预览：555 点，x=[-4.51, 9.02]，y=[-7.84, 9.39]</div>
+                <div class="odom-local-preview-wrap">
+                  <div class="odom-local-preview-head">
+                    <strong>局部坐标预览</strong>
+                    <span id="odom-local-preview-copy" class="muted-text">由距离 / 方位角换算后的局部 XY</span>
+                  </div>
+                  <canvas id="odom-local-preview-canvas" class="chart-canvas odom-local-preview-canvas" height="243" width="246"></canvas>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <article id="odom-trajectory-panel" class="panel">
+            <div class="section-header">
+              <div>
+                <h2>Odom 全局轨迹</h2>
+                <p>identity / 首帧归零 / 自定义 yaw。</p>
+              </div>
+            </div>
+            <canvas id="trajectory-canvas" class="chart-canvas" height="393" width="1173"></canvas>
+            <div id="trajectory-summary" class="stats-inline"><div class="inline-pill">轨迹点数 1348</div><div class="inline-pill">X [494.83, 507.79]</div><div class="inline-pill">Y [163.40, 179.15]</div><div class="inline-pill">模式 identity</div><div class="inline-pill">全局点 (502.76, 172.58)</div><div class="inline-pill">朝向 125.6°</div><div class="inline-pill">目标点 (496.58, 166.89)</div><div class="inline-pill">局部XY→全局 555 点</div></div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <div id="series-modal" class="modal-backdrop hidden" aria-hidden="true">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Series Editor</p>
+            <h3 id="series-modal-title">编辑系列</h3>
+          </div>
+          <button id="series-modal-close" class="ghost-btn small-btn" type="button">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="field-grid">
+            <label class="compact-field full-width">
+              <span>名称</span>
+              <input id="series-modal-label" type="text" placeholder="可选，自定义图例名称">
+            </label>
+            <label class="compact-field">
+              <span>类型</span>
+              <select id="series-modal-type">
+                <option value="numeric">数值字段</option>
+                <option value="string">字符串提取</option>
+              </select>
+            </label>
+            <label class="compact-field">
+              <span>颜色</span>
+              <input id="series-modal-color" class="color-input" type="color" value="#5ba2ff">
+            </label>
+            <label class="compact-field">
+              <span>倍率</span>
+              <input id="series-modal-scale" type="number" step="0.1" value="1">
+            </label>
+            <label class="compact-field full-width">
+              <span>Topic</span>
+              <select id="series-modal-topic"></select>
+            </label>
+            <label id="series-modal-field-wrap" class="compact-field full-width">
+              <span>Field</span>
+              <select id="series-modal-field"></select>
+            </label>
+            <label id="series-modal-string-field-wrap" class="compact-field full-width hidden">
+              <span>字符串字段</span>
+              <select id="series-modal-string-field"></select>
+            </label>
+            <label id="series-modal-parser-mode-wrap" class="compact-field hidden">
+              <span>模式</span>
+              <select id="series-modal-parser-mode">
+                <option value="regex">regex</option>
+                <option value="json">json path</option>
+                <option value="kv">key=value</option>
+              </select>
+            </label>
+            <label id="series-modal-capture-wrap" class="compact-field hidden">
+              <span id="series-modal-capture-label">捕获组</span>
+              <input id="series-modal-capture" type="text" placeholder="默认 1">
+            </label>
+            <label id="series-modal-pattern-wrap" class="compact-field full-width hidden">
+              <span id="series-modal-pattern-label">正则表达式</span>
+              <input id="series-modal-pattern" type="text" placeholder="distance=(\\d+\\.?\\d*)">
+            </label>
+          </div>
+          <p id="series-modal-help" class="help-text"></p>
+        </div>
+        <div class="modal-footer">
+          <button id="series-modal-cancel" class="ghost-btn" type="button">取消</button>
+          <button id="series-modal-save" class="primary-btn" type="button">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="./app.js"></script>
+  
+
+
+  </body>
+</html>

@@ -1,0 +1,7 @@
+# Bag Studio Python 依赖
+# 注意：rclpy / rosidl_runtime_py 由 ROS2 Humble 的系统包提供（`source /opt/ros/humble/setup.bash`），
+# 不在此 pip 清单里。
+
+Flask>=2.0
+Pillow>=9.0
+PyYAML>=5.4

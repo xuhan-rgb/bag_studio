@@ -1,0 +1,11 @@
+{
+  "_comment": "默认 host：你在哪个 shell 执行 `bash start.sh`，那就是运行环境，由你自己 source 好 ROS2 Humble 后再启动。只有当你想让 server 在 A 环境运行、export 却跳到 B 容器里跑（少见）时，才切成 distrobox/docker 并填下面的字段。优先级：环境变量 > 本文件 > 内置默认。环境变量：BAG_STUDIO_RUNNER / BAG_STUDIO_DISTROBOX_NAME / BAG_STUDIO_DOCKER_IMAGE。",
+
+  "mode": "host",
+
+  "distrobox_name": "TODO-fill-me-when-mode=distrobox: 例如 ubuntu_2204_ros2",
+
+  "docker_image":        "TODO-fill-me-when-mode=docker: 例如 ros:humble-ros-base-jammy 或你的自建镜像",
+  "docker_mounts":       ["TODO-fill-me-when-mode=docker: 例如 /path/to/your/workspace:/path/to/your/workspace"],
+  "docker_extra_args":   []
+}
