@@ -69,6 +69,7 @@ const state = {
     fullscreenPanelIdx: -1,
     fullscreenFrameIdx: -1,
     gridSignature: '',
+    bboxEnabled: [],
   },
   seriesEditor: {
     isOpen: false,
@@ -2086,6 +2087,17 @@ function getPrimaryImageFrames() {
   return getFramesForTopic(primaryTopic);
 }
 
+function classifyTopicKind(topic) {
+  if (topic.image_stream) return '图像';
+  if (topic.odom_track) return 'Odom';
+  if (topic.detection2d_stream) return '检测';
+  if (topic.skipped) return '跳过';
+  return '数据';
+}
+
+// 排序时同类 topic 聚在一起；数字越小越靠前。
+const TOPIC_KIND_ORDER = { '图像': 0, 'Odom': 1, '检测': 2, '数据': 3, '跳过': 4 };
+
 function renderBagTopicSummary() {
   if (!el.bagTopicSummary || !el.bagTopicList || !el.bagTopicCount) return;
   const topics = getTopics();
@@ -2100,13 +2112,25 @@ function renderBagTopicSummary() {
   const numericCount = getNumericTopics().length;
   const odomCount = getOdomTopics().length;
   el.bagTopicCount.textContent = `${topics.length} 个 topic · 图像 ${imageCount} · 数值 ${numericCount} · Odom ${odomCount}`;
-  el.bagTopicList.innerHTML = topics.map((topic) => {
+
+  const sorted = topics.slice().sort((a, b) => {
+    const ka = classifyTopicKind(a);
+    const kb = classifyTopicKind(b);
+    const oa = TOPIC_KIND_ORDER[ka] ?? 99;
+    const ob = TOPIC_KIND_ORDER[kb] ?? 99;
+    if (oa !== ob) return oa - ob;
+    return String(a.name).localeCompare(String(b.name));
+  });
+
+  el.bagTopicList.innerHTML = sorted.map((topic) => {
+    const kind = classifyTopicKind(topic);
     const detail = topic.image_stream
       ? `${topic.image_stream.count || (topic.image_stream.frames || []).length} 帧`
       : topic.odom_track
         ? `${topic.odom_track.count || 0} 点`
-        : `${topic.count || 0} 条`;
-    const kind = topic.image_stream ? '图像' : topic.odom_track ? 'Odom' : topic.skipped ? '跳过' : '数据';
+        : topic.detection2d_stream
+          ? `${topic.detection2d_stream.count || 0} 样本`
+          : `${topic.count || 0} 条`;
     return `<span class="meta-pill" title="${escapeHtml(topic.type || '')}">${escapeHtml(topic.name)} · ${escapeHtml(kind)} · ${escapeHtml(detail)}</span>`;
   }).join('');
 }
@@ -2124,6 +2148,110 @@ function findNearestFrameIndex(frames, t) {
   }
   if (lo + 1 < frames.length && frames[lo + 1].t - t < t - frames[lo].t) return lo + 1;
   return lo;
+}
+
+const DETECTION2D_TYPE = 'vision_msgs/msg/Detection2DArray';
+const DETECTION_TIME_TOLERANCE_SEC = 0.1;
+const DETECTION_BOX_COLOR = '#00ff88';
+
+function getDetection2DTopics() {
+  return getTopics().filter((topic) => {
+    const stream = topic?.detection2d_stream;
+    return stream && Array.isArray(stream.samples) && stream.samples.length > 0;
+  });
+}
+
+function extractCameraKeyword(imageTopicName) {
+  const name = String(imageTopicName || '').toLowerCase();
+  const m = /(front|rear|back|left|right|top|bottom)/.exec(name);
+  if (m) return m[1] === 'back' ? 'rear' : m[1];
+  const parts = name.split('/').filter(Boolean);
+  return parts.length >= 2 ? parts[parts.length - 2] : '';
+}
+
+function findMatchingDetectionStream(imageTopicName) {
+  const keyword = extractCameraKeyword(imageTopicName);
+  if (!keyword) return null;
+  for (const topic of getDetection2DTopics()) {
+    const samples = topic.detection2d_stream.samples.filter(
+      (sample) => sample.frame_id && sample.frame_id.toLowerCase().includes(keyword),
+    );
+    if (samples.length) return { topic, samples };
+  }
+  return null;
+}
+
+// 在 object-fit: contain 下，<img> 的布局盒子可能比实际图像大（留黑边）。
+// 检测框的坐标是图像原生像素空间，所以画 canvas 时要先把"图像显示矩形"算出来。
+// 返回值 { dx, dy, dw, dh, scale }：图像在 canvas 坐标系里的 xy/宽高/缩放比。
+function computeDisplayedImageRect(img, canvasW, canvasH) {
+  const nw = img.naturalWidth || 0;
+  const nh = img.naturalHeight || 0;
+  if (!nw || !nh || !canvasW || !canvasH) return null;
+  const scale = Math.min(canvasW / nw, canvasH / nh);
+  const dw = nw * scale;
+  const dh = nh * scale;
+  return {
+    dx: (canvasW - dw) / 2,
+    dy: (canvasH - dh) / 2,
+    dw,
+    dh,
+    scale,
+  };
+}
+
+function drawBBoxes(ctx, rect, sample) {
+  const boxes = (sample && sample.boxes) || [];
+  if (!boxes.length) return;
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = DETECTION_BOX_COLOR;
+  ctx.font = '12px sans-serif';
+  ctx.textBaseline = 'top';
+  for (const box of boxes) {
+    const cx = rect.dx + box.cx * rect.scale;
+    const cy = rect.dy + box.cy * rect.scale;
+    const w = box.sx * rect.scale;
+    const h = box.sy * rect.scale;
+    ctx.save();
+    ctx.translate(cx, cy);
+    if (box.theta) ctx.rotate(box.theta);
+    ctx.strokeRect(-w / 2, -h / 2, w, h);
+    ctx.restore();
+
+    const parts = [];
+    if (box.id) parts.push(box.id);
+    if (box.score != null) parts.push(box.score.toFixed(2));
+    const label = parts.join(' ');
+    if (!label) continue;
+    const tx = cx - w / 2;
+    const ty = cy - h / 2 - 14;
+    const tw = ctx.measureText(label).width + 6;
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(tx, ty, tw, 14);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(label, tx + 3, ty + 1);
+  }
+}
+
+function findNearestDetectionSample(samples, t, tolSec = DETECTION_TIME_TOLERANCE_SEC) {
+  if (!samples || !samples.length) return null;
+  let lo = 0;
+  let hi = samples.length - 1;
+  if (t <= samples[0].t) {
+    return samples[0].t - t <= tolSec ? samples[0] : null;
+  }
+  if (t >= samples[hi].t) {
+    return t - samples[hi].t <= tolSec ? samples[hi] : null;
+  }
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (samples[mid].t <= t) lo = mid;
+    else hi = mid - 1;
+  }
+  const left = samples[lo];
+  const right = samples[lo + 1];
+  const pick = right && right.t - t < t - left.t ? right : left;
+  return Math.abs(pick.t - t) <= tolSec ? pick : null;
 }
 
 function hexToRgbTriple(hex) {
@@ -2546,6 +2674,11 @@ function syncImagePanels() {
     const firstReady = getImageTopics(false)[0] || imageTopics[0];
     state.imageViewer.panels.push(firstReady.name);
   }
+  const bbox = state.imageViewer.bboxEnabled;
+  bbox.length = state.imageViewer.panels.length;
+  for (let i = 0; i < bbox.length; i += 1) {
+    if (bbox[i] === undefined) bbox[i] = true;
+  }
 }
 
 function buildImageTileHtml(panelIdx, topicName, canRemove) {
@@ -2559,15 +2692,20 @@ function buildImageTileHtml(panelIdx, topicName, canRemove) {
     : '<option value="">（无图像 topic）</option>';
 
   const frames = getFramesForTopic(topicName);
+  const bboxChecked = state.imageViewer.bboxEnabled[panelIdx] !== false ? 'checked' : '';
+  const headControls = `
+    <select class="cam-topic-select" data-panel-idx="${panelIdx}">${options}</select>
+    <label class="cam-bbox-toggle-label" title="叠加 2D 检测框">
+      <input type="checkbox" class="cam-bbox-toggle" data-panel-idx="${panelIdx}" ${bboxChecked}> 框
+    </label>
+    ${canRemove ? `<button type="button" class="cam-remove-btn ghost-btn small-btn" data-panel-idx="${panelIdx}" title="移除该相机">×</button>` : ''}`;
   if (!frames.length) {
     return `
       <div class="cam-tile" data-panel-idx="${panelIdx}">
-        <div class="cam-tile-head">
-          <select class="cam-topic-select" data-panel-idx="${panelIdx}">${options}</select>
-          ${canRemove ? `<button type="button" class="cam-remove-btn ghost-btn small-btn" data-panel-idx="${panelIdx}" title="移除该相机">×</button>` : ''}
-        </div>
+        <div class="cam-tile-head">${headControls}</div>
         <div class="cam-tile-stage cam-tile-stage-empty">
           <img class="cam-frame-img hidden" data-panel-idx="${panelIdx}" data-frame-idx="" alt="camera ${panelIdx}" />
+          <canvas class="cam-bbox-canvas" data-panel-idx="${panelIdx}"></canvas>
           <span class="cam-tile-empty muted-text">此 topic 无帧数据</span>
           <div class="meta-list image-meta-overlay hidden">
             <span class="meta-pill cam-meta-index"></span>
@@ -2581,12 +2719,10 @@ function buildImageTileHtml(panelIdx, topicName, canRemove) {
 
   return `
     <div class="cam-tile" data-panel-idx="${panelIdx}">
-      <div class="cam-tile-head">
-        <select class="cam-topic-select" data-panel-idx="${panelIdx}">${options}</select>
-        ${canRemove ? `<button type="button" class="cam-remove-btn ghost-btn small-btn" data-panel-idx="${panelIdx}" title="移除该相机">×</button>` : ''}
-      </div>
+      <div class="cam-tile-head">${headControls}</div>
       <div class="cam-tile-stage">
         <img class="cam-frame-img hidden" data-panel-idx="${panelIdx}" data-frame-idx="" alt="camera ${panelIdx}" />
+        <canvas class="cam-bbox-canvas" data-panel-idx="${panelIdx}"></canvas>
         <span class="cam-tile-empty muted-text hidden">此 topic 无帧数据</span>
         <div class="meta-list image-meta-overlay hidden">
           <span class="meta-pill cam-meta-index"></span>
@@ -2627,8 +2763,54 @@ function bindImageGridEvents() {
         openFullscreen(panelIdx, frameIdx);
       }
     });
+    img.addEventListener('load', () => {
+      const panelIdx = Number(img.dataset.panelIdx);
+      if (!Number.isInteger(panelIdx)) return;
+      const topicName = state.imageViewer.panels[panelIdx];
+      if (topicName) refreshBBoxOverlay(panelIdx, topicName);
+    });
     img.style.cursor = 'zoom-in';
   });
+
+  el.imageGrid.querySelectorAll('.cam-bbox-toggle').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const panelIdx = Number(cb.dataset.panelIdx);
+      if (!Number.isInteger(panelIdx)) return;
+      state.imageViewer.bboxEnabled[panelIdx] = cb.checked;
+      const topicName = state.imageViewer.panels[panelIdx];
+      if (topicName) refreshBBoxOverlay(panelIdx, topicName);
+    });
+  });
+}
+
+function refreshBBoxOverlay(panelIdx, topicName) {
+  const tile = el.imageGrid.querySelector(`.cam-tile[data-panel-idx="${panelIdx}"]`);
+  if (!tile) return;
+  const canvas = tile.querySelector('.cam-bbox-canvas');
+  const img = tile.querySelector('.cam-frame-img');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const stage = tile.querySelector('.cam-tile-stage');
+  const stageRect = stage ? stage.getBoundingClientRect() : canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(stageRect.width * dpr));
+  canvas.height = Math.max(1, Math.round(stageRect.height * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, stageRect.width, stageRect.height);
+
+  if (!state.imageViewer.bboxEnabled[panelIdx]) return;
+  if (!img || img.classList.contains('hidden')) return;
+
+  const stream = findMatchingDetectionStream(topicName);
+  if (!stream || !stream.samples || !stream.samples.length) return;
+  const sample = findNearestDetectionSample(stream.samples, state.cursor.t);
+  if (!sample || !sample.boxes || !sample.boxes.length) return;
+
+  const rect = computeDisplayedImageRect(img, stageRect.width, stageRect.height);
+  if (!rect) return;
+  drawBBoxes(ctx, rect, sample);
 }
 
 function updateImageTile(panelIdx, topicName) {
@@ -2663,6 +2845,7 @@ function updateImageTile(panelIdx, topicName) {
       img.dataset.displayedSrc = '';
       img.dataset.pendingSrc = '';
     }
+    refreshBBoxOverlay(panelIdx, topicName);
     return;
   }
 
@@ -2692,6 +2875,8 @@ function updateImageTile(panelIdx, topicName) {
     metaAbsolute.classList.toggle('hidden', !absoluteTime);
   }
   if (metaSize) metaSize.textContent = `${frame.width || '?'}×${frame.height || '?'}`;
+
+  refreshBBoxOverlay(panelIdx, topicName);
 }
 
 function renderImageViewer() {
@@ -3805,8 +3990,21 @@ async function loadManifest(manifestPath) {
 
 function syncDatasetSelect() {
   const datasets = state.indexData?.datasets || [];
+  const duplicateCounts = new Map();
+  datasets.forEach((dataset) => {
+    const label = String(dataset.label || '');
+    duplicateCounts.set(label, (duplicateCounts.get(label) || 0) + 1);
+  });
   el.datasetSelect.innerHTML = datasets
-    .map((dataset) => `<option value="${escapeHtml(dataset.id)}">${escapeHtml(dataset.label)} · ${escapeHtml(dataset.generated_at)}</option>`)
+    .map((dataset) => {
+      const label = String(dataset.label || '');
+      const suffix = duplicateCounts.get(label) > 1 && dataset.source_bag_path
+        ? ` · ${dataset.source_bag_path}`
+        : '';
+      const text = `${label}${suffix} · ${dataset.generated_at}`;
+      const title = dataset.source_bag_path ? ` title="${escapeHtml(dataset.source_bag_path)}"` : '';
+      return `<option value="${escapeHtml(dataset.id)}"${title}>${escapeHtml(text)}</option>`;
+    })
     .join('');
 }
 

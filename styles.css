@@ -390,6 +390,26 @@ input[type="range"] {
   object-fit: contain;
   display: block;
 }
+.cam-bbox-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.cam-bbox-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  user-select: none;
+}
+.cam-bbox-toggle-label input {
+  margin: 0;
+}
 .cam-tile-stage.cam-tile-stage-empty {
   color: var(--muted);
   font-size: 0.82rem;

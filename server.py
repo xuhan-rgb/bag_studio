@@ -5,7 +5,6 @@ Bag Studio HTTP Server (Flask-based)
 - POST /parse_bag -> runs export script inside distrobox container
 - Serves parsed bag data from the system temp directory
 """
-import json
 import os
 import shlex
 import shutil
@@ -18,6 +17,13 @@ from flask import Flask, after_this_request, jsonify, request, send_file, send_f
 
 import runner
 from recording_convert import build_mp4_output_name, convert_webm_to_mp4
+from scripts.dataset_utils import (
+    atomic_write_json,
+    atomic_write_text,
+    compute_dataset_id,
+    compute_bag_fingerprint,
+    read_json_file,
+)
 
 APP_ROOT = Path(__file__).parent
 LIVE_DIR = Path(tempfile.gettempdir()) / 'bag_studio_live'
@@ -27,6 +33,7 @@ EXPORT_SCRIPT = APP_ROOT / 'scripts' / 'export_bag_studio_dataset.py'
 LIVE_DIR.mkdir(parents=True, exist_ok=True)
 DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 PROGRESS_FILE = LIVE_DIR / '_progress.json'
+PROGRESS_LOCK = threading.Lock()
 
 app = Flask(__name__, static_folder=str(APP_ROOT), static_url_path='')
 
@@ -55,16 +62,13 @@ migrate_legacy_datasets()
 
 
 def read_progress():
-    if PROGRESS_FILE.exists():
-        try:
-            return json.loads(PROGRESS_FILE.read_text(encoding='utf-8'))
-        except Exception:
-            return None
-    return None
+    data = read_json_file(PROGRESS_FILE)
+    return data if isinstance(data, dict) else None
 
 
 def write_progress(data):
-    PROGRESS_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+    with PROGRESS_LOCK:
+        atomic_write_json(PROGRESS_FILE, data, ensure_ascii=False)
 
 
 def pick_directory_via_dialog() -> str:
@@ -111,22 +115,12 @@ def pick_directory_via_dialog() -> str:
 
 
 def run_export_in_container(bag_path: str):
-    import hashlib
-
     bag_p = Path(bag_path).expanduser().resolve()
     if not bag_p.exists():
         write_progress({'status': 'error', 'error': f'Bag not found: {bag_path}'})
         return
 
-    try:
-        db_files = sorted(bag_p.glob('*.db3'))
-        if db_files:
-            st = db_files[0].stat()
-            fp = hashlib.sha256(f'{db_files[0]}{st.st_mtime}{st.st_size}'.encode()).hexdigest()[:16]
-        else:
-            fp = hashlib.sha256(str(bag_p).encode()).hexdigest()[:16]
-    except Exception:
-        fp = hashlib.sha256(str(bag_p).encode()).hexdigest()[:16]
+    fp = compute_bag_fingerprint(bag_p)
 
     write_progress({
         'status': 'parsing',
@@ -139,7 +133,7 @@ def run_export_in_container(bag_path: str):
         'pct': 0,
     })
 
-    dataset_id = bag_p.name
+    dataset_id = compute_dataset_id(bag_p)
     output_dir = DATASETS_DIR / dataset_id
     cached_marker = output_dir / '.fingerprint'
     manifest_relpath = f'/datasets/{dataset_id}/manifest.json'
@@ -159,7 +153,7 @@ def run_export_in_container(bag_path: str):
         write_progress({'status': 'error', 'error': message})
         return
 
-    log_path = Path(f'/tmp/export_{dataset_id}.log')
+    log_path = LIVE_DIR / f'export_{dataset_id}.log'
     export_args = (
         ' ' + shlex.quote(str(bag_p)) +
         ' --app-root ' + shlex.quote(str(APP_ROOT)) +
@@ -187,7 +181,7 @@ def run_export_in_container(bag_path: str):
     manifest_path = output_dir / 'manifest.json'
     if exit_code == 0 and manifest_path.exists():
         output_dir.mkdir(parents=True, exist_ok=True)
-        cached_marker.write_text(fp, encoding='utf-8')
+        atomic_write_text(cached_marker, fp, encoding='utf-8')
         write_progress({'status': 'done', 'already_cached': False, 'dataset_id': dataset_id, 'manifest': manifest_relpath})
         return
 
@@ -195,7 +189,7 @@ def run_export_in_container(bag_path: str):
         log_tail = log_path.read_text(encoding='utf-8', errors='replace')[-1000:]
     except Exception:
         log_tail = ''
-    write_progress({'status': 'error', 'error': f'Export failed (exit {exit_code}): {log_tail or "查看 /tmp 导出日志失败"}'})
+    write_progress({'status': 'error', 'error': f'Export failed (exit {exit_code}): {log_tail or f"查看日志失败: {log_path}"}'})
 
 
 @app.route('/')

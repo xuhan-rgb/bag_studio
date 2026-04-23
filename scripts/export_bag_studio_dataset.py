@@ -29,6 +29,11 @@ from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 from PIL import Image
 
+try:
+    from dataset_utils import atomic_write_json, compute_dataset_id, merge_dataset_index, read_json_file, sanitize_dataset_id
+except ImportError:
+    from scripts.dataset_utils import atomic_write_json, compute_dataset_id, merge_dataset_index, read_json_file, sanitize_dataset_id
+
 SKIP_TOPIC_TYPES = {
     "sensor_msgs/msg/PointCloud2",
     "sensor_msgs/msg/CameraInfo",
@@ -43,22 +48,18 @@ def _update_progress(**fields: Any) -> None:
     if _PROGRESS_FILE is None:
         return
     try:
-        existing: Dict[str, Any] = {}
-        if _PROGRESS_FILE.exists():
-            try:
-                existing = json.loads(_PROGRESS_FILE.read_text(encoding="utf-8")) or {}
-            except Exception:
-                existing = {}
+        existing = read_json_file(_PROGRESS_FILE)
+        if not isinstance(existing, dict):
+            existing = {}
         existing.update(fields)
-        _PROGRESS_FILE.write_text(
-            json.dumps(existing, ensure_ascii=False), encoding="utf-8"
-        )
+        atomic_write_json(_PROGRESS_FILE, existing, ensure_ascii=False)
     except Exception:
         pass
 IMAGE_TOPIC_TYPES = {
     "sensor_msgs/msg/Image",
     "sensor_msgs/msg/CompressedImage",
 }
+DETECTION2D_TYPE = "vision_msgs/msg/Detection2DArray"
 DEFAULT_TEMP_DATA_ROOT = Path(tempfile.gettempdir()) / "bag_studio_live"
 
 
@@ -124,17 +125,6 @@ def to_iso8601(ts_sec: Optional[float]) -> Optional[str]:
     if ts_sec is None:
         return None
     return datetime.fromtimestamp(ts_sec, tz=timezone.utc).astimezone().isoformat(timespec="milliseconds")
-
-
-def sanitize_dataset_id(value: str) -> str:
-    cleaned = []
-    for ch in value:
-        if ch.isalnum() or ch in {"-", "_", "."}:
-            cleaned.append(ch)
-        else:
-            cleaned.append("_")
-    result = "".join(cleaned).strip("._")
-    return result or "bag_studio_dataset"
 
 
 def ensure_clean_output_dir(path: Path, force: bool) -> None:
@@ -408,6 +398,80 @@ def write_raw_image_frame(
     }
 
 
+def _bbox_center_xy(center: Any) -> tuple:
+    # vision_msgs 新版：center 是 vision_msgs/Pose2D，位置在 center.position.{x,y}
+    # 老版（foxy）：center 是 geometry_msgs/Pose2D，位置在 center.{x,y}
+    position = getattr(center, "position", None)
+    if position is not None:
+        return float(getattr(position, "x", 0.0)), float(getattr(position, "y", 0.0))
+    return float(getattr(center, "x", 0.0)), float(getattr(center, "y", 0.0))
+
+
+def _hypothesis_class_and_score(primary: Any) -> tuple:
+    # vision_msgs 新版：ObjectHypothesisWithPose.hypothesis = ObjectHypothesis{class_id, score}
+    # 老版：ObjectHypothesisWithPose 直接有 id 和 score
+    hypothesis = getattr(primary, "hypothesis", None)
+    if hypothesis is not None:
+        return (
+            str(getattr(hypothesis, "class_id", "") or ""),
+            getattr(hypothesis, "score", None),
+        )
+    return (
+        str(getattr(primary, "id", "") or ""),
+        getattr(primary, "score", None),
+    )
+
+
+def extract_detection2d_array(msg: Any) -> List[Dict[str, Any]]:
+    """拆出 (frame_id -> boxes) 的多条 sample。
+
+    Detection2DArray 里每条 detection 的 header.frame_id 可能不同
+    （常见用法：一条消息混合多相机结果）。按 frame_id 分组输出。
+    array 级 header.frame_id 作为兜底，仅在 detection 自身 frame_id 为空时使用。
+    """
+    array_frame_id = str(getattr(getattr(msg, "header", None), "frame_id", "") or "")
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for detection in getattr(msg, "detections", []) or []:
+        bbox = getattr(detection, "bbox", None)
+        if bbox is None:
+            continue
+        center = getattr(bbox, "center", None)
+        if center is None:
+            continue
+        det_header = getattr(detection, "header", None)
+        det_frame_id = str(getattr(det_header, "frame_id", "") or "") if det_header else ""
+        frame_id = det_frame_id or array_frame_id
+
+        cx, cy = _bbox_center_xy(center)
+        results = getattr(detection, "results", []) or []
+        primary = results[0] if results else None
+        class_id, raw_score = _hypothesis_class_and_score(primary) if primary is not None else ("", None)
+        score = None
+        if raw_score is not None:
+            try:
+                score_val = float(raw_score)
+                if math.isfinite(score_val):
+                    score = round(score_val, 6)
+            except (TypeError, ValueError):
+                score = None
+        grouped[frame_id].append(
+            {
+                "cx": round(cx, 4),
+                "cy": round(cy, 4),
+                "sx": round(float(getattr(bbox, "size_x", 0.0)), 4),
+                "sy": round(float(getattr(bbox, "size_y", 0.0)), 4),
+                "theta": round(float(getattr(center, "theta", 0.0)), 6),
+                "id": class_id,
+                "score": score,
+            }
+        )
+
+    if not grouped:
+        # 保留一条空 sample 以保持时间轴上"这一刻确实发了消息但无 detection"的信息
+        return [{"frame_id": array_frame_id, "boxes": []}]
+    return [{"frame_id": fid, "boxes": boxes} for fid, boxes in grouped.items()]
+
+
 def finalize_topic_entry(topic_entry: Dict[str, Any]) -> None:
     topic_entry["available_numeric_fields"] = sorted(topic_entry["numeric_fields"].keys())
     topic_entry["available_string_fields"] = sorted(topic_entry["string_fields"].keys())
@@ -428,6 +492,13 @@ def finalize_topic_entry(topic_entry: Dict[str, Any]) -> None:
     if topic_entry.get("odom_track"):
         samples = topic_entry["odom_track"]["samples"]
         topic_entry["odom_track"]["count"] = len(samples)
+
+    if topic_entry.get("detection2d_stream"):
+        det_samples = topic_entry["detection2d_stream"]["samples"]
+        topic_entry["detection2d_stream"]["count"] = len(det_samples)
+        topic_entry["detection2d_stream"]["frame_ids"] = sorted(
+            {sample["frame_id"] for sample in det_samples if sample.get("frame_id")}
+        )
 
 
 def iter_sqlite_messages(
@@ -496,6 +567,7 @@ def build_manifest(bag_path: Path, output_dir: Path) -> Dict[str, Any]:
             "skipped": topic_type in SKIP_TOPIC_TYPES,
             "skip_reason": "binary_or_image_topic" if topic_type in SKIP_TOPIC_TYPES else None,
             "image_stream": {"frames": []} if topic_type in IMAGE_TOPIC_TYPES else None,
+            "detection2d_stream": {"samples": []} if topic_type == DETECTION2D_TYPE else None,
         }
         for topic_name, topic_type in topic_type_map.items()
     }
@@ -574,6 +646,18 @@ def build_manifest(bag_path: Path, output_dir: Path) -> Dict[str, Any]:
             written_frames += 1
             continue
 
+        if topic_type == DETECTION2D_TYPE:
+            try:
+                det_samples = extract_detection2d_array(msg)
+            except Exception as exc:
+                print(f"  - detection2d 提取失败 (topic={topic_name}): {exc}", flush=True)
+            else:
+                for sample in det_samples:
+                    sample["t"] = round(timeline_sec, 6)
+                    topic_entry["detection2d_stream"]["samples"].append(sample)
+            # 不 continue：继续走 flatten_message_tree，让 header.stamp 等标量
+            # 出现在数值字段选择器里，与 Detection3DArray / 其他 topic 行为一致。
+
         numeric_fields: Dict[str, List[float]] = defaultdict(list)
         string_fields: Dict[str, str] = {}
         try:
@@ -621,6 +705,9 @@ def build_manifest(bag_path: Path, output_dir: Path) -> Dict[str, Any]:
         if topic_entry.get("odom_track"):
             for sample in topic_entry["odom_track"]["samples"]:
                 sample["t"] = round(sample["t"] - timeline_origin_sec, 6)
+        if topic_entry.get("detection2d_stream"):
+            for sample in topic_entry["detection2d_stream"]["samples"]:
+                sample["t"] = round(sample["t"] - timeline_origin_sec, 6)
         finalize_topic_entry(topic_entry)
 
     bag_duration_sec = 0.0
@@ -653,34 +740,12 @@ def update_index(app_root: Path, dataset_id: str, manifest: Dict[str, Any]) -> N
     datasets_dir.mkdir(parents=True, exist_ok=True)
     index_path = datasets_dir / "index.json"
 
-    index_data: Dict[str, Any] = {"latest": dataset_id, "datasets": []}
-    if index_path.exists():
-        try:
-            index_data = json.loads(index_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            index_data = {"latest": dataset_id, "datasets": []}
-
-    bag_name = manifest["bag"]["name"]
-
-    # Replace any existing entry for the same bag name (same bag, newer export)
-    remaining = [
-        item for item in index_data.get("datasets", [])
-        if item.get("label") != bag_name
-    ]
-    entry = {
-        "id": dataset_id,
-        "label": bag_name,
-        "manifest": f"datasets/{dataset_id}/manifest.json",
-        "generated_at": manifest["generated_at"],
-        "duration_sec": manifest["bag"]["duration_sec"],
-        "topic_count": len(manifest["topics"]),
-        "total_messages": manifest["bag"]["total_messages"],
-    }
-    remaining.append(entry)
-    remaining.sort(key=lambda item: item.get("generated_at", ""), reverse=True)
-    index_data["latest"] = dataset_id
-    index_data["datasets"] = remaining
-    index_path.write_text(json.dumps(index_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    index_data = merge_dataset_index(
+        read_json_file(index_path),
+        dataset_id=dataset_id,
+        manifest=manifest,
+    )
+    atomic_write_json(index_path, index_data, ensure_ascii=False, indent=2)
 
 
 def ensure_assets_exist(app_root: Path) -> None:
@@ -737,7 +802,7 @@ def main() -> None:
     ensure_assets_exist(app_root)
     data_root = resolve_data_root(app_root, args.data_root)
 
-    dataset_id = sanitize_dataset_id(args.dataset_id or bag_path.name)
+    dataset_id = sanitize_dataset_id(args.dataset_id) if args.dataset_id else compute_dataset_id(bag_path)
     output_dir = data_root / "datasets" / dataset_id
     ensure_clean_output_dir(output_dir, force=args.force)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -750,7 +815,7 @@ def main() -> None:
         rclpy.shutdown()
 
     manifest_path = output_dir / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
     print(f"[2/3] 写入 manifest: {manifest_path}", flush=True)
 
     update_index(data_root, dataset_id, manifest)
