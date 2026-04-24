@@ -114,6 +114,78 @@ def pick_directory_via_dialog() -> str:
     raise RuntimeError('未找到可用的目录选择器，请安装 zenity / kdialog，或手动输入路径')
 
 
+def is_bag_dir(path: Path) -> bool:
+    """判断一个目录是否是 rosbag2 bag 目录。
+
+    决策点 (你可以按项目实际情况收紧/放宽):
+      1. 最官方的标记是根目录下有 metadata.yaml (推荐严格派)。
+      2. 有些旧 bag / 中断的录制可能没有 metadata.yaml,只有 *.db3 / *.mcap。
+      3. 你可以容忍哪种形态? 严格(只认 metadata.yaml)还是宽松(任一证据)?
+
+    当前策略: 严格 —— 只认 metadata.yaml。
+    """
+    # TODO(业务调整): 若需要兼容没有 metadata.yaml 的旧 bag,
+    #   可以补一条 any(path.glob('*.db3')) or any(path.glob('*.mcap'))。
+    try:
+        if not path.is_dir():
+            return False
+        return (path / 'metadata.yaml').is_file()
+    except (OSError, PermissionError):
+        return False
+
+
+def list_bag_candidates_in(parent: Path) -> list:
+    """扫描 parent 的直接子目录,返回所有 bag 候选,按 mtime 倒序。"""
+    candidates = []
+    try:
+        children = list(parent.iterdir())
+    except OSError:
+        return candidates
+    for child in children:
+        if not is_bag_dir(child):
+            continue
+        try:
+            stat = child.stat()
+        except OSError:
+            continue
+        total_size = 0
+        try:
+            for f in child.iterdir():
+                if f.is_file():
+                    total_size += f.stat().st_size
+        except OSError:
+            pass
+        candidates.append({
+            'name': child.name,
+            'path': str(child),
+            'mtime': stat.st_mtime,
+            'size': total_size,
+        })
+    candidates.sort(key=lambda item: item['mtime'], reverse=True)
+    return candidates
+
+
+def classify_bag_path(raw_path: str) -> dict:
+    """分类一个用户输入的路径。"""
+    if not raw_path:
+        return {'kind': 'none', 'error': '路径为空'}
+    path = Path(raw_path).expanduser()
+    try:
+        path = path.resolve()
+    except OSError as exc:
+        return {'kind': 'none', 'path': str(path), 'error': f'路径解析失败: {exc}'}
+    if not path.exists():
+        return {'kind': 'none', 'path': str(path), 'error': f'路径不存在: {path}'}
+    if not path.is_dir():
+        return {'kind': 'none', 'path': str(path), 'error': f'不是目录: {path}'}
+    if is_bag_dir(path):
+        return {'kind': 'bag', 'path': str(path)}
+    candidates = list_bag_candidates_in(path)
+    if candidates:
+        return {'kind': 'parent', 'path': str(path), 'candidates': candidates}
+    return {'kind': 'none', 'path': str(path), 'error': f'{path} 不是 bag,也不包含 bag 子目录'}
+
+
 def run_export_in_container(bag_path: str):
     bag_p = Path(bag_path).expanduser().resolve()
     if not bag_p.exists():
@@ -217,6 +289,15 @@ def parse_bag():
     thread = threading.Thread(target=run_export_in_container, args=(bag_path,), daemon=True)
     thread.start()
     return jsonify({'status': 'started', 'bag_path': bag_path})
+
+
+@app.route('/list_bag_candidates', methods=['POST'])
+def list_bag_candidates():
+    data = request.get_json(force=True) or {}
+    raw = (data.get('path') or '').strip()
+    result = classify_bag_path(raw)
+    status = 200 if result.get('kind') != 'none' else 404
+    return jsonify(result), status
 
 
 @app.route('/pick_bag_dir', methods=['POST'])

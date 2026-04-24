@@ -185,6 +185,11 @@ const el = {
   progressBar: document.getElementById('progress-bar'),
   progressText: document.getElementById('progress-text'),
   parseError: document.getElementById('parse-error'),
+  bagCandidates: document.getElementById('bag-candidates'),
+  bagCandidatesTitle: document.getElementById('bag-candidates-title'),
+  bagCandidatesHint: document.getElementById('bag-candidates-hint'),
+  bagCandidatesClose: document.getElementById('bag-candidates-close'),
+  bagCandidatesList: document.getElementById('bag-candidates-list'),
   themeToggleBtn: document.getElementById('theme-toggle-btn'),
   themeToggleIndicator: document.getElementById('theme-toggle-indicator'),
   themeDockBody: document.getElementById('theme-dock-body'),
@@ -4365,7 +4370,16 @@ function bindGlobalEvents() {
   el.saveDefaultLayoutBtn?.addEventListener('click', () => {
     const selectedPreset = getSelectedLayoutPreset();
     const isEditable = selectedPreset && !isReadonlyLayoutPreset(selectedPreset);
-    const name = isEditable ? selectedPreset.name : `模板 ${(state.layoutPresets || []).length + 1}`;
+    const defaultName = isEditable
+      ? selectedPreset.name
+      : `模板 ${(state.layoutPresets || []).length + 1}`;
+    const promptTitle = isEditable
+      ? `重命名/覆盖配置「${selectedPreset.name}」`
+      : '新配置名称';
+    const input = window.prompt(promptTitle, defaultName);
+    if (input === null) return; // 用户取消
+    const name = input.trim();
+    if (!name) return; // 空名忽略
     const targetId = isEditable ? selectedPreset.id : '';
     saveDefaultLayoutPreset(name, targetId);
   });
@@ -4671,10 +4685,72 @@ async function loadBag(bagPath) {
   });
 }
 
+function formatBagSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  return `${value.toFixed(value >= 100 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+function formatBagMtime(mtime) {
+  if (!Number.isFinite(mtime) || mtime <= 0) return '';
+  const d = new Date(mtime * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function hideBagCandidates() {
+  el.bagCandidates?.classList.add('hidden');
+  if (el.bagCandidatesList) el.bagCandidatesList.innerHTML = '';
+}
+
+function showBagCandidates(parentPath, candidates) {
+  if (!el.bagCandidates || !el.bagCandidatesList) return;
+  el.bagCandidates.classList.remove('hidden');
+  if (el.bagCandidatesHint) {
+    el.bagCandidatesHint.textContent = `${parentPath} · ${candidates.length} 个 bag · 按修改时间倒序`;
+  }
+  const currentPath = el.bagPathInput?.value?.trim() || '';
+  el.bagCandidatesList.innerHTML = candidates.map((c) => {
+    const selected = c.path === currentPath ? ' selected' : '';
+    return `
+      <button type="button" class="bag-candidate-item${selected}" data-path="${escapeHtml(c.path)}">
+        <span class="bag-candidate-name">${escapeHtml(c.name)}</span>
+        <span class="bag-candidate-meta">${escapeHtml(formatBagMtime(c.mtime))}</span>
+        <span class="bag-candidate-meta">${escapeHtml(formatBagSize(c.size))}</span>
+      </button>
+    `;
+  }).join('');
+}
+
+function markBagCandidateSelected(path) {
+  if (!el.bagCandidatesList) return;
+  el.bagCandidatesList.querySelectorAll('.bag-candidate-item').forEach((node) => {
+    node.classList.toggle('selected', node.dataset.path === path);
+  });
+}
+
+// 分类一个路径。kind ∈ {'bag', 'parent', 'none'}。
+async function classifyBagPath(path) {
+  const response = await fetch('/list_bag_candidates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  const data = await response.json().catch(() => ({}));
+  return data;
+}
+
 function bindBagLoaderEvents() {
   el.pickDirBtn?.addEventListener('click', async () => {
     el.pickDirBtn.disabled = true;
     el.parseError.classList.add('hidden');
+    hideBagCandidates();
     try {
       const response = await fetch('/pick_bag_dir', { method: 'POST' });
       const data = await response.json().catch(() => ({}));
@@ -4685,6 +4761,11 @@ function bindBagLoaderEvents() {
         throw new Error('未返回目录路径');
       }
       el.bagPathInput.value = data.path;
+      // 选完就主动探测一下,是父目录就展开候选列表。
+      const classified = await classifyBagPath(data.path);
+      if (classified.kind === 'parent') {
+        showBagCandidates(classified.path, classified.candidates || []);
+      }
     } catch (error) {
       el.parseError.classList.remove('hidden');
       el.parseError.textContent = error.message || '选择目录失败';
@@ -4701,13 +4782,27 @@ function bindBagLoaderEvents() {
       return;
     }
     el.parseError.classList.add('hidden');
+    // 开始解析前先分类:手敲了父目录也能展开候选而不是直接报错。
+    try {
+      const classified = await classifyBagPath(path);
+      if (classified.kind === 'parent') {
+        showBagCandidates(classified.path, classified.candidates || []);
+        return;
+      }
+      if (classified.kind === 'none') {
+        el.parseError.classList.remove('hidden');
+        el.parseError.textContent = classified.error || '路径无效';
+        return;
+      }
+    } catch (_) {
+      // 网络/解析错误,继续按老流程交给后端判定。
+    }
+    // 不在这里 hideBagCandidates() —— 保留候选列表,方便解析完立即换下一个 bag。
     try {
       const result = await loadBag(path);
       el.parseBtn.disabled = false;
       if (result.manifestPath) {
-        // Update index to include this dataset
         await refreshDatasetIndex();
-        // Switch to the new dataset
         const idx = state.indexData?.datasets?.find((d) => d.id === result.datasetId);
         if (idx) {
           el.datasetSelect.value = idx.id;
@@ -4719,6 +4814,18 @@ function bindBagLoaderEvents() {
       el.parseBtn.disabled = false;
     }
   });
+
+  el.bagCandidatesList?.addEventListener('click', (event) => {
+    const btn = event.target.closest?.('.bag-candidate-item');
+    if (!btn) return;
+    const path = btn.dataset.path;
+    if (!path) return;
+    el.bagPathInput.value = path;
+    markBagCandidateSelected(path);
+    // 列表保留不折叠,方便连续切换 bag。用户可手动点"关闭"收起。
+  });
+
+  el.bagCandidatesClose?.addEventListener('click', hideBagCandidates);
 
   el.bagPathInput?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') el.parseBtn?.click();
