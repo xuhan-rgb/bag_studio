@@ -530,6 +530,59 @@ input[type="range"] {
   background: linear-gradient(180deg, rgba(220, 228, 245, 0.98) 0%, rgba(235, 240, 252, 0.94) 100%);
 }
 .timeline-canvas { height: 170px; }
+.focus-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 8px 0 6px;
+  min-height: 26px;
+}
+.focus-tabs:empty { display: none; }
+.focus-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: #475569;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  user-select: none;
+}
+.focus-tab:hover { background: rgba(148, 163, 184, 0.2); }
+.focus-tab[aria-selected="true"] {
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.92);
+  border-color: currentColor;
+  font-weight: 600;
+}
+.focus-tab .focus-tab-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.focus-layout-toggle {
+  color: #475569;
+  margin-left: 4px;
+  font-weight: 500;
+}
+.timeline-split-container {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+}
+.timeline-split-container.active { display: flex; }
+.timeline-split-container .chart-canvas {
+  height: 110px;
+  min-height: 90px;
+}
 #trajectory-canvas { height: 420px; }
 .stats-inline { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; min-width: 0; }
 .inline-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

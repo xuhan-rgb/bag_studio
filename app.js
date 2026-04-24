@@ -43,6 +43,8 @@ const state = {
   manifest: null,
   subplots: [],
   seriesConfigs: [],
+  focusedSeriesId: null,
+  timelineLayout: 'overlay',
   nextSeriesId: 1,
   activeDatasetBaseUrl: null,
   odomConfig: {
@@ -131,6 +133,8 @@ const el = {
   odomLocalPreviewCanvas: document.getElementById('odom-local-preview-canvas'),
   addSubplot: document.getElementById('add-subplot'),
   cleanupSubplots: document.getElementById('cleanup-subplots'),
+  hideXyPanelBtn: document.getElementById('hide-xy-panel'),
+  showXyPanelBtn: document.getElementById('show-xy-panel'),
   layoutPresetSelect: document.getElementById('layout-preset-select'),
   saveDefaultLayoutBtn: document.getElementById('save-default-layout'),
   deleteLayoutPresetBtn: document.getElementById('delete-layout-preset'),
@@ -147,6 +151,8 @@ const el = {
   odomConfigPanel: document.getElementById('odom-config-panel'),
   trajectorySummary: document.getElementById('trajectory-summary'),
   timelineCanvas: document.getElementById('timeline-canvas'),
+  timelineFocusTabs: document.getElementById('timeline-focus-tabs'),
+  timelineSplitContainer: document.getElementById('timeline-split-container'),
   cursorSlider: document.getElementById('cursor-slider'),
   cursorMeta: document.getElementById('cursor-meta'),
   cursorSamples: document.getElementById('cursor-samples'),
@@ -2401,15 +2407,163 @@ function setCursor(t, options = {}) {
   updateCursorMeta();
 }
 
+function ensureFocusedSeries(seriesList) {
+  if (!seriesList.length) {
+    state.focusedSeriesId = null;
+    return;
+  }
+  const hit = seriesList.find((s) => s.id === state.focusedSeriesId);
+  if (!hit) state.focusedSeriesId = seriesList[0].id;
+}
+
+function getFocusedSeries(seriesList) {
+  return seriesList.find((s) => s.id === state.focusedSeriesId) || seriesList[0] || null;
+}
+
+function renderFocusTabs(seriesList) {
+  if (!el.timelineFocusTabs) return;
+  if (seriesList.length <= 1) {
+    el.timelineFocusTabs.innerHTML = '';
+    return;
+  }
+  const isSplit = state.timelineLayout === 'split';
+  const focusedId = state.focusedSeriesId;
+  const tabsHtml = isSplit ? '' : seriesList.map((series) => {
+    const selected = series.id === focusedId;
+    const color = series.color || '#5ba2ff';
+    const safeLabel = escapeHtml(series.label || '');
+    return `<button type="button" class="focus-tab" role="tab" data-series-id="${escapeHtml(series.id)}"`
+      + ` aria-selected="${selected ? 'true' : 'false'}" style="color:${color}">`
+      + `<span class="focus-tab-dot"></span><span>${safeLabel}</span></button>`;
+  }).join('');
+  const nextLayout = isSplit ? 'overlay' : 'split';
+  const toggleLabel = isSplit ? '合并显示' : '分开显示';
+  const toggleHtml = `<button type="button" class="focus-tab focus-layout-toggle"`
+    + ` data-layout-toggle="${nextLayout}"`
+    + ` title="切换叠加/分开布局">${toggleLabel}</button>`;
+  el.timelineFocusTabs.innerHTML = tabsHtml + toggleHtml;
+}
+
+// 决策点 (Stage 1 留给用户的实现):
+//   1) Y 轴上下留白比例 — 默认 8% 可读性好,但 azimuth 这类固定量程可能 0% 更合适。
+//   2) 当 series 语义是角度(circular, ±180°/0-360°)时是否强制固定范围。
+//   3) 当 min == max(恒值信号) 时的 fallback 策略。
+function computeFocusYRange(series) {
+  const min = series.stats?.min;
+  const max = series.stats?.max;
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return { yMin: -1, yMax: 1 };
+  }
+  // TODO(你来写): 根据上面 3 个决策点调整 yMin / yMax。
+  //   提示: series.label 可以用来判断是否像 azimuth / yaw / angle。
+  let yMin = min;
+  let yMax = max;
+  if (yMax === yMin) { yMax += 1; yMin -= 1; }
+  const pad = (yMax - yMin) * 0.08;
+  return { yMin: yMin - pad, yMax: yMax + pad };
+}
+
+function drawFocusYAxis(ctx, opts) {
+  const { padding, plotWidth, plotHeight, width, yMin, yMax, yScale, rawMin, rawMax, color } = opts;
+  ctx.save();
+
+  // 网格线 + 刻度文字 (5 等分)。
+  ctx.strokeStyle = 'rgba(148,163,184,0.2)';
+  ctx.fillStyle = '#4a5a7a';
+  ctx.font = '10px "JetBrains Mono", monospace';
+  ctx.lineWidth = 1;
+  const steps = 4;
+  for (let i = 0; i <= steps; i += 1) {
+    const value = yMin + ((yMax - yMin) * i) / steps;
+    const y = yScale(value);
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(padding.left + plotWidth, y);
+    ctx.stroke();
+    const label = fmtNumber(value, Math.abs(yMax - yMin) < 10 ? 2 : 1);
+    const textWidth = ctx.measureText(label).width;
+    ctx.fillText(label, padding.left - textWidth - 6, y + 3);
+  }
+
+  // 整段 min / max 虚线边界 + 数值标签。
+  if (Number.isFinite(rawMin) && Number.isFinite(rawMax)) {
+    const boundaryColor = color || '#5ba2ff';
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = `${boundaryColor}88`;
+    ctx.lineWidth = 1;
+    [rawMin, rawMax].forEach((val) => {
+      const y = yScale(val);
+      if (y < padding.top - 2 || y > padding.top + plotHeight + 2) return;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(padding.left + plotWidth, y);
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+    // 右上角贴一个 min / max 小 chip。
+    ctx.font = '9px "JetBrains Mono", monospace';
+    const chip = `min ${fmtNumber(rawMin, 2)} · max ${fmtNumber(rawMax, 2)}`;
+    const chipWidth = ctx.measureText(chip).width + 10;
+    const chipX = width - padding.right - chipWidth;
+    const chipY = padding.top + 2;
+    ctx.fillStyle = `${boundaryColor}22`;
+    ctx.fillRect(chipX, chipY, chipWidth, 14);
+    ctx.fillStyle = boundaryColor;
+    ctx.fillText(chip, chipX + 5, chipY + 10);
+  }
+
+  ctx.restore();
+}
+
 function renderTimeline() {
   if (!el.timelineCanvas) return;
   const seriesList = getRenderedSeries();
-  const { ctx, width, height } = setupCanvas(el.timelineCanvas, 170);
+  ensureFocusedSeries(seriesList);
+  renderFocusTabs(seriesList);
+
+  const useSplit = state.timelineLayout === 'split' && seriesList.length >= 2;
+  const splitBox = el.timelineSplitContainer;
+  if (useSplit) {
+    el.timelineCanvas.style.display = 'none';
+    if (splitBox) splitBox.classList.add('active');
+    renderSplitTimelines(seriesList);
+  } else {
+    el.timelineCanvas.style.display = '';
+    if (splitBox) {
+      splitBox.classList.remove('active');
+      splitBox.innerHTML = '';
+    }
+    const focused = getFocusedSeries(seriesList);
+    drawTimelineOnCanvas(el.timelineCanvas, seriesList, focused, 170);
+  }
+}
+
+function renderSplitTimelines(seriesList) {
+  const container = el.timelineSplitContainer;
+  if (!container) return;
+  // 复用已有 canvas,仅在数量变化时重建。
+  if (container.children.length !== seriesList.length) {
+    container.innerHTML = '';
+    seriesList.forEach(() => {
+      const canvas = document.createElement('canvas');
+      canvas.className = 'chart-canvas timeline-canvas';
+      container.appendChild(canvas);
+    });
+  }
+  const perHeight = seriesList.length === 2 ? 110 : 96;
+  seriesList.forEach((series, idx) => {
+    drawTimelineOnCanvas(container.children[idx], [series], series, perHeight);
+  });
+}
+
+function drawTimelineOnCanvas(canvas, seriesList, focused, canvasHeight) {
+  if (!canvas) return;
+  const { ctx, width, height } = setupCanvas(canvas, canvasHeight);
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = '#f8fafc';
   ctx.fillRect(0, 0, width, height);
 
-  const padding = { top: 14, right: 18, bottom: 26, left: 42 };
+  const padding = { top: 14, right: 18, bottom: 26, left: 56 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
   const xMin = state.cursor.tMin;
@@ -2442,18 +2596,28 @@ function renderTimeline() {
     ctx.fillText(`${(xMin + (i / 5) * (xMax - xMin)).toFixed(1)}s`, x - 14, height - 8);
   }
 
-  if (seriesList.length) {
-    const allPoints = seriesList.flatMap((series) => series.points);
-    let yMin = Math.min(...allPoints.map((point) => point.v));
-    let yMax = Math.max(...allPoints.map((point) => point.v));
-    if (yMax === yMin) {
-      yMax += 1;
-      yMin -= 1;
-    }
-    const yPad = (yMax - yMin) * 0.08;
-    yMin -= yPad;
-    yMax += yPad;
-    const yScale = (value) => padding.top + (1 - (value - yMin) / Math.max(yMax - yMin, 1e-6)) * plotHeight;
+  if (seriesList.length && focused) {
+    // 每条 series 用自己的范围映射到画布,这样谁都不会被压扁成一条直线。
+    const seriesScales = new Map();
+    seriesList.forEach((series) => {
+      const { yMin: sMin, yMax: sMax } = computeFocusYRange(series);
+      seriesScales.set(series.id, {
+        yMin: sMin,
+        yMax: sMax,
+        scale: (v) => padding.top + (1 - (v - sMin) / Math.max(sMax - sMin, 1e-6)) * plotHeight,
+      });
+    });
+    const focusedScale = seriesScales.get(focused.id);
+    const { yMin, yMax, scale: yScale } = focusedScale;
+
+    // Y 轴刻度 / 虚线边界 / min·max chip 都对齐焦点 series。
+    drawFocusYAxis(ctx, {
+      padding, plotWidth, plotHeight, width,
+      yMin, yMax, yScale,
+      rawMin: focused.stats?.min,
+      rawMax: focused.stats?.max,
+      color: focused.color,
+    });
 
     if (yMin <= 0 && yMax >= 0) {
       const zeroY = yScale(0);
@@ -2476,30 +2640,33 @@ function renderTimeline() {
       ctx.restore();
     }
 
+    // 同时绘制所有 series,每条用自己的 yScale;焦点更粗/更亮。
     const sampledPoints = [];
     seriesList.forEach((series) => {
+      const { scale: sYScale } = seriesScales.get(series.id);
+      const isFocused = series.id === focused.id;
       const currentValue = sampleSeriesAt(series, state.cursor.t);
-      const currentY = currentValue === null ? null : yScale(currentValue);
-      ctx.globalAlpha = 0.82;
+      const currentY = currentValue === null ? null : sYScale(currentValue);
+      ctx.globalAlpha = isFocused ? 0.95 : 0.55;
       ctx.strokeStyle = series.color;
-      ctx.lineWidth = 1.35;
+      ctx.lineWidth = isFocused ? 1.7 : 1.1;
       ctx.beginPath();
       series.points.forEach((point, index) => {
         const x = xScale(point.t);
-        const y = yScale(point.v);
+        const y = sYScale(point.v);
         if (index === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
       ctx.stroke();
       ctx.globalAlpha = 1;
-      if (currentY !== null) sampledPoints.push({ series, y: currentY, value: currentValue });
+      if (currentY !== null) sampledPoints.push({ series, y: currentY, value: currentValue, isFocused });
     });
 
     const cursorX = xScale(state.cursor.t);
-    sampledPoints.forEach(({ series, y, value }) => {
+    sampledPoints.forEach(({ series, y, value, isFocused }) => {
       ctx.save();
       ctx.setLineDash([5, 5]);
-      ctx.strokeStyle = `${series.color}55`;
+      ctx.strokeStyle = `${series.color}${isFocused ? '66' : '33'}`;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(padding.left, y);
@@ -2507,9 +2674,10 @@ function renderTimeline() {
       ctx.stroke();
       ctx.restore();
 
+      ctx.globalAlpha = isFocused ? 1 : 0.7;
       ctx.fillStyle = series.color;
       ctx.beginPath();
-      ctx.arc(cursorX, y, 3.2, 0, Math.PI * 2);
+      ctx.arc(cursorX, y, isFocused ? 3.4 : 2.8, 0, Math.PI * 2);
       ctx.fill();
 
       const label = fmtNumber(value, 3);
@@ -2521,6 +2689,7 @@ function renderTimeline() {
       ctx.fillRect(labelX, labelY - 10, labelWidth, 16);
       ctx.fillStyle = '#ffffff';
       ctx.fillText(label, labelX + 6, labelY + 2);
+      ctx.globalAlpha = 1;
     });
   } else {
     ctx.fillStyle = '#4a5a7a';
@@ -3927,6 +4096,14 @@ function renderLayoutVisibility() {
   el.odomConfigPanel?.classList.toggle('hidden', !view.showOdom);
   el.workspaceGrid?.classList.toggle('single-column-layout', !view.showSidebar);
   el.topVisualGrid?.classList.toggle('single-panel-layout', !view.showXY);
+  el.showXyPanelBtn?.classList.toggle('hidden', view.showXY);
+}
+
+function setXyPanelVisible(visible) {
+  state.viewConfig = normalizeViewConfig(state.viewConfig, DEFAULT_VIEW_CONFIG);
+  state.viewConfig.showXY = !!visible;
+  renderLayoutVisibility();
+  renderVisuals();
 }
 
 function resetStateForManifest() {
@@ -4058,6 +4235,20 @@ function bindGlobalEvents() {
     }
   });
 
+  el.timelineFocusTabs?.addEventListener('click', (event) => {
+    const btn = event.target.closest?.('.focus-tab');
+    if (!btn) return;
+    if (btn.dataset.layoutToggle) {
+      state.timelineLayout = btn.dataset.layoutToggle;
+      renderTimeline();
+      return;
+    }
+    const id = btn.dataset.seriesId;
+    if (!id || id === state.focusedSeriesId) return;
+    state.focusedSeriesId = id;
+    renderTimeline();
+  });
+
   el.reloadBtn.addEventListener('click', () => {
     const dataset = (state.indexData?.datasets || []).find((item) => item.id === el.datasetSelect.value);
     if (dataset) loadManifest(dataset.manifest).catch(console.error);
@@ -4180,6 +4371,9 @@ function bindGlobalEvents() {
     if (!window.confirm(`确认删除模板「${preset.name}」？`)) return;
     deleteSelectedLayoutPreset();
   });
+
+  el.hideXyPanelBtn?.addEventListener('click', () => setXyPanelVisible(false));
+  el.showXyPanelBtn?.addEventListener('click', () => setXyPanelVisible(true));
 
   el.odomTopicSelect.addEventListener('change', () => {
     state.odomConfig.topic = el.odomTopicSelect.value;

@@ -90,6 +90,7 @@
           </label>
           <button id="save-default-layout" class="ghost-btn small-btn">保存为配置</button>
           <button id="delete-layout-preset" class="ghost-btn small-btn">删除配置</button>
+          <button id="show-xy-panel" class="ghost-btn small-btn hidden">显示 XY 工作区</button>
         </div>
         <div id="bag-topic-summary" class="bag-topic-summary">
           <div class="bag-topic-summary-head">
@@ -220,7 +221,9 @@
       <span class="inline-pill">范围 0.00–36.27 s</span>
     </div>
                   </div>
+                  <div id="timeline-focus-tabs" class="focus-tabs" role="tablist" aria-label="时间轴焦点系列"></div>
                   <canvas id="timeline-canvas" class="chart-canvas timeline-canvas" height="159" width="507"></canvas>
+                  <div id="timeline-split-container" class="timeline-split-container"></div>
                   <div class="timeline-controls">
                     <button id="cursor-to-start" class="ghost-btn small-btn">回到开始</button>
                     <input id="cursor-slider" class="timeline-slider" type="range" min="0" max="1000" value="0">
@@ -259,6 +262,7 @@
                     <div class="section-actions subplot-header-tools">
                       <button id="add-subplot" class="ghost-btn small-btn">添加坐标组</button>
                       <button id="cleanup-subplots" class="ghost-btn small-btn">清空坐标组</button>
+                      <button id="hide-xy-panel" class="ghost-btn small-btn" title="隐藏 XY 工作区">×</button>
                     </div>
                   </div>
                   <div id="plot-panels" class="plot-panels side-plot-panels"><section class="subplot-card">
