@@ -1040,7 +1040,9 @@ function syncSeriesEditorDraftFromForm() {
   if (!draft) return;
   draft.label = el.seriesModalLabel.value;
   draft.color = el.seriesModalColor.value;
-  draft.scale = parseMaybeNumber(el.seriesModalScale.value) ?? 1;
+  // 用户可能在输入中间态 (如刚敲了 '-' 或 '0.'),此时 parseMaybeNumber 返回 null。
+  // 保留上一次合法值,避免把 draft 打回 1 再被 renderSeriesEditor 覆盖用户输入。
+  draft.scale = parseMaybeNumber(el.seriesModalScale.value) ?? draft.scale ?? 1;
   const nextType = el.seriesModalType.value;
   if (nextType !== draft.type) {
     const replacement = nextType === 'numeric'
@@ -1074,7 +1076,10 @@ function renderSeriesEditor() {
   el.seriesModalLabel.value = draft.label || '';
   el.seriesModalType.value = draft.type;
   el.seriesModalColor.value = draft.color;
-  el.seriesModalScale.value = String(draft.scale ?? 1);
+  // 用户正在输入中 (如敲了 '-' 或 '-0.') 时不要写回 value,否则会打断输入。
+  if (document.activeElement !== el.seriesModalScale) {
+    el.seriesModalScale.value = String(draft.scale ?? 1);
+  }
 
   const topicNames = (draft.type === 'numeric' ? getNumericTopics() : getStringTopics()).map((item) => item.name);
   el.seriesModalTopic.innerHTML = getOptionList(topicNames, draft.topic);
@@ -4471,31 +4476,39 @@ function bindGlobalEvents() {
   });
 
   let isDraggingTimeline = false;
-  const getTimelineT = (e) => {
-    const rect = el.timelineCanvas.getBoundingClientRect();
+  let draggingCanvas = null;
+  const getTimelineT = (e, canvas) => {
+    const target = canvas || draggingCanvas || el.timelineCanvas;
+    if (!target) return state.cursor.t;
+    const rect = target.getBoundingClientRect();
     const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
     const ratio = Math.max(0, Math.min(1, x / rect.width));
     return state.cursor.tMin + ratio * (state.cursor.tMax - state.cursor.tMin);
   };
-  el.timelineCanvas?.addEventListener('mousedown', (e) => {
-    isDraggingTimeline = true;
+  const applyTimelineDrag = (e) => {
     setCursor(getTimelineT(e), { silent: true });
     renderTimeline();
     renderImageViewer();
     renderPlotPanels(getRenderedSeries());
     drawTrajectory();
     updateCursorMeta();
+  };
+  // 事件委托到 timeline 面板,让主 canvas 和 split 子 canvas 都能触发拖动。
+  el.timelinePanel?.addEventListener('mousedown', (e) => {
+    const canvas = e.target.closest?.('canvas.timeline-canvas');
+    if (!canvas) return;
+    isDraggingTimeline = true;
+    draggingCanvas = canvas;
+    applyTimelineDrag(e);
   });
   window.addEventListener('mousemove', (e) => {
     if (!isDraggingTimeline) return;
-    setCursor(getTimelineT(e), { silent: true });
-    renderTimeline();
-    renderImageViewer();
-    renderPlotPanels(getRenderedSeries());
-    drawTrajectory();
-    updateCursorMeta();
+    applyTimelineDrag(e);
   });
-  window.addEventListener('mouseup', () => { isDraggingTimeline = false; });
+  window.addEventListener('mouseup', () => {
+    isDraggingTimeline = false;
+    draggingCanvas = null;
+  });
 
   // ── Image viewer ──────────────────────────────────────────────
   el.addImagePanelBtn?.addEventListener('click', () => {
